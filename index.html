@@ -73,7 +73,8 @@ h3{font-size:13px;margin:18px 0 6px;color:var(--mut);text-transform:uppercase;le
 .btn.g{background:var(--card2);color:var(--tx)}
 .btn:disabled{opacity:.3}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-input[type=text],input[type=number],input[type=date],input[type=url],select{background:var(--card2);border:1px solid var(--line);border-radius:10px;padding:8px 10px;min-width:0}
+textarea{width:100%;resize:vertical}
+input[type=text],input[type=number],input[type=date],input[type=url],select,textarea{background:var(--card2);border:1px solid var(--line);border-radius:10px;padding:8px 10px;min-width:0}
 .kv{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px dashed var(--line)}
 .kv:last-child{border:0}
 .ladder{display:grid;grid-template-columns:repeat(6,1fr);gap:4px;font-size:11px;text-align:center}
@@ -155,7 +156,7 @@ const DAILY=[
  {id:'lunch',name:'Eat lunch',xp:40,g:'Jedzenie',ic:'🥗',cat:'Jedzenie'},
  {id:'calories',name:'Calories quota',xp:60,g:'Jedzenie',ic:'🍽️',cat:'Jedzenie'},
  {id:'piano',name:'Practice piano 30 min',xp:70,g:'Twórczość',ic:'🎹',cat:'Twórczość'},
- {id:'read',name:'Read',tiers:[80,80,90],unit:'30 min',g:'Twórczość',ic:'📖',cat:'Twórczość'},
+ {id:'read',name:'Read',tiers:[80,80,90],unit:'30 min',g:'Twórczość',ic:'📖',cat:'Czytanie'},
  {id:'noinsta',name:'No insta / short content',xp:30,g:'Higiena cyfrowa',ic:'🚫',cat:'Mental & cyfrowe',eve:1},
  {id:'nofb',name:'No fb / short content',xp:30,g:'Higiena cyfrowa',ic:'🚫',cat:'Mental & cyfrowe',eve:1},
  {id:'nonsfw',name:'No NSFW',xp:100,g:'Higiena cyfrowa',ic:'🛡️',cat:'Mental & cyfrowe',eve:1},
@@ -177,8 +178,9 @@ const PER=[
 ];
 const LAUNDRY={id:'laundry',name:'Laundry (per load)',xp:80,cap:3,ic:'🧺'};
 const ALL={};[...DAILY,...DAYX,...PER,LAUNDRY].forEach(t=>ALL[t.id]=t);
+const FOCUS=['ga','piano','read'];
 const CAT=id=>{const t=ALL[id.split('@')[0]];return t.cat||'Dom'};
-const DEFSET={budget:150,savePct:15,startDate:'',calUrl:'',calToken:'',gaFromCal:false,
+const DEFSET={budget:150,savePct:15,startDate:'',calUrl:'',calToken:'',gaFromCal:false,showXP:false,
  defStrength:2,defCycling:2,defGaHours:10,defLaundry:2,
  workoutCalRe:'intervals|icu',strengthRe:'strength|siłow|silow|gym|weights|kraft',workoutIgnoreRe:'note|notatka|rest day|odpoczynek',
  workCalRe:'Schodowski',workRe:'work|praca|arbeit|office|büro|buero',gaRe:'\\bGA\\b|General Anesthesia|[Cc]ompos|[Kk]ompon|Trzewia',xp:{}};
@@ -216,17 +218,29 @@ function penalties(){
    if(!periodDone(p.id,P,p.len))out.push({id:p.id,P,end,amt:p.pen,revocable:diffD(end,today)<=3,deadline:addD(end,3)});
    P=addD(P,p.len)}}
  return out}
-function planDay(d){
- const st=S.settings;let t=0;
- for(const k of DAILY)t+=k.tiers?tiersOf(k.id)[0]:xpOf(k.id);
+function planDayCats(d){
+ const st=S.settings,o={},add=(c,v)=>o[c]=(o[c]||0)+v;
+ for(const k of DAILY)add(k.cat,k.tiers?tiersOf(k.id)[0]:xpOf(k.id));
  const c=S.calSynced&&S.cal[d];
- if(c)t+=c.strength*xpOf('strength')+c.cycling*xpOf('cycling');
- else t+=(st.defStrength*xpOf('strength')+st.defCycling*xpOf('cycling'))/7;
- if(st.gaFromCal&&c)t+=tierSum('ga',c.ga);
- else{const w=dow(d);if(w>=1&&w<=5)t+=tierSumFrac('ga',st.defGaHours/5)}
- for(const p of PER)t+=xpOf(p.id)/p.len;
- t+=st.defLaundry*xpOf('laundry')/7;
- return t}
+ if(c)add('Ciało',c.strength*xpOf('strength')+c.cycling*xpOf('cycling'));
+ else add('Ciało',(st.defStrength*xpOf('strength')+st.defCycling*xpOf('cycling'))/7);
+ if(st.gaFromCal&&c)add('Twórczość',tierSum('ga',c.ga));
+ else{const w=dow(d);if(w>=1&&w<=5)add('Twórczość',tierSumFrac('ga',st.defGaHours/5))}
+ for(const p of PER)add('Dom',xpOf(p.id)/p.len);
+ add('Dom',st.defLaundry*xpOf('laundry')/7);
+ return o}
+const planDay=d=>Object.values(planDayCats(d)).reduce((a,b)=>a+b,0);
+// balans: każda kategoria liczy się max do 110% swojego planu; wyższe dynamiki wymagają minimum w każdej
+const BCATS=['Twórczość','Czytanie','Ciało','Mental & cyfrowe','Jedzenie','Dom'];
+const CAP=1.1,OVER=.25,FLOOR={4:.3,5:.5};
+function rangeBal(start,end,penList){
+ const pc={},ec={};
+ for(let d=start;d<=end;d=addD(d,1)){const p=planDayCats(d);for(const c in p)pc[c]=(pc[c]||0)+p[c];const l=S.log[d];if(l)for(const k in l){const c=CAT(k);ec[c]=(ec[c]||0)+l[k].xp}}
+ ec.Dom=(ec.Dom||0)-penList.reduce((a,p)=>a+p.amt,0);
+ let plan=0,eff=0;const bal={};
+ for(const c of BCATS){const pl=pc[c]||0,e=ec[c]||0;plan+=pl;eff+=Math.min(e,pl*CAP)+Math.max(0,e-pl*CAP)*OVER;bal[c]={plan:pl,earned:e,ratio:pl?e/pl:1,capped:e>pl*CAP}}
+ eff+=ec.Praca||0;
+ return{plan,eff,raw:Object.values(ec).reduce((a,b)=>a+b,0),bal,minRatio:Math.min(...BCATS.map(c=>bal[c].ratio))}}
 const dayEarned=d=>Object.values(S.log[d]||{}).reduce((a,e)=>a+e.xp,0);
 function lifetime(){let x=0;for(const d in S.log)x+=dayEarned(d);return x-penalties().reduce((a,p)=>a+p.amt,0)}
 function levelOf(xp){let lvl=1,acc=0,need=1750;while(xp>=acc+need){acc+=need;lvl++;need=1500+250*lvl}return{lvl,into:Math.max(0,xp-acc),need}}
@@ -234,15 +248,18 @@ const title=l=>l<5?'Uczeń':l<10?'Czeladnik':l<15?'Wirtuoz':l<20?'Kapelmistrz':'
 function monthStats(ym){
  const m=S.months[ym],B=m?m.budget:S.settings.budget;
  const start=maxS(ym+'-01',S.settings.startDate),end=ym+'-'+pad(monthDays(ym));
- let plan=0;for(let d=start;d<=end;d=addD(d,1))plan+=planDay(d);
- let earned=0;for(const d in S.log)if(d.startsWith(ym))earned+=dayEarned(d);
  const pens=penalties().filter(p=>ymOf(p.end)===ym),pen=pens.reduce((a,p)=>a+p.amt,0);
- earned-=pen;
- const pct=plan?Math.max(0,earned)/plan*100:0,tier=TH.filter(x=>pct>=x).length;
+ const r=rangeBal(start,end,pens),plan=r.plan,earned=r.eff;
+ const pct=plan?Math.max(0,earned)/plan*100:0,rawTier=TH.filter(x=>pct>=x).length;
+ let tier=rawTier;
+ if(tier>=5&&r.minRatio<FLOOR[5])tier=4;
+ if(tier>=4&&r.minRatio<FLOOR[4])tier=3;
+ const weak=FLOOR[tier+1]?BCATS.filter(c=>r.bal[c].ratio<FLOOR[tier+1]):[];
+ const blocked=tier<rawTier,fff=pct>=80&&tier===5;
  const spendable=B*(1-S.settings.savePct/100),unlocked=r2(spendable*tier/5);
  const spent=S.purchases.filter(p=>p.src==='month'&&p.ym===ym).reduce((a,p)=>a+p.cost,0);
- const needXP=tier<5?TH[tier]/100*plan-earned:0;
- return{plan,earned,pen,pens,pct,tier,unlocked,spent,left:r2(unlocked-spent),B,spendable,needXP}}
+ const needXP=tier<5?Math.max(0,TH[tier]/100*plan-earned):0;
+ return{plan,earned,raw:r.raw,bal:r.bal,pen,pens,pct,tier,rawTier,blocked,weak,fff,unlocked,spent,left:r2(unlocked-spent),B,spendable,needXP}}
 const vaultAvail=()=>r2(S.vault.bal*ACCESS[Math.min(12,S.vault.patience)]/100);
 
 // ---------- month rollover ----------
@@ -254,11 +271,11 @@ function openMonth(ym,carry){
 function closeMonth(ym){
  const r=monthStats(ym),m=S.months[ym];
  const leftover=Math.max(0,r2(r.unlocked-r.spent));
- const bp=r.pct>=80?Math.min(25,Math.floor((r.pct-75)/5)*5):0,bonus=r2(r.B*bp/100);
- const qualified=r.pct>=60||!!m.paused;
+ const bp=r.fff?Math.min(25,Math.floor((r.pct-75)/5)*5):0,bonus=r2(r.B*bp/100);
+ const qualified=r.tier>=4||!!m.paused;
  S.vault.bal=r2(S.vault.bal+leftover+bonus);
  S.vault.patience=qualified?Math.min(12,S.vault.patience+1):Math.max(0,S.vault.patience-3);
- m.result={pct:r.pct,tier:r.tier,unlocked:r.unlocked,spent:r.spent,leftover,bonus,qualified,earned:r.earned,plan:r.plan};
+ m.result={pct:r.pct,tier:r.tier,fff:r.fff,unlocked:r.unlocked,spent:r.spent,leftover,bonus,qualified,earned:r.earned,plan:r.plan};
  const carry=[];
  if(leftover>0)carry.push({label:`Niewydane — ${monthName(ym)}`,amt:leftover});
  if(bonus>0)carry.push({label:`Bonus fff — ${monthName(ym)}`,amt:bonus});
@@ -291,17 +308,19 @@ async function syncCal(silent){
 let tt;function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('on');clearTimeout(tt);tt=setTimeout(()=>t.classList.remove('on'),2600)}
 function modal(h,lock){$('#mbox').innerHTML=h;$('#modal').classList.add('on');$('#modal').dataset.lock=lock?1:''}
 function closeModal(){$('#modal').classList.remove('on')}
-function floatXP(n,x,y){if(!n)return;const f=document.createElement('div');f.className='float'+(n<0?' neg':'');f.textContent=(n>0?'+':'')+fmt(n)+' XP';f.style.left=(x-30)+'px';f.style.top=(y-20)+'px';document.body.appendChild(f);setTimeout(()=>f.remove(),1000)}
+function floatXP(n,x,y){if(!n)return;const f=document.createElement('div');f.className='float'+(n<0?' neg':'');f.textContent=S.settings.showXP?(n>0?'+':'')+fmt(n)+' XP':(n>0?'♪':'·');f.style.left=(x-30)+'px';f.style.top=(y-20)+'px';document.body.appendChild(f);setTimeout(()=>f.remove(),1000)}
 const editable=d=>d>=S.settings.startDate&&d<=todayS()&&ymOf(d)===S.curMonth;
 
 function hdr(ms){
  const lv=levelOf(lifetime()),pct=Math.min(100,ms.pct);
  const marks=TH.map((t,i)=>`<i class="${ms.pct>=t?'hit':''}" style="left:${t}%"></i><em class="${ms.pct>=t?'hit':''}" style="left:${t}%">${DYN[i+1]}</em>`).join('');
+ const sx=S.settings.showXP;
+ const nxt=ms.tier>=5?'pełny budżet 🎉':ms.blocked||(ms.needXP===0&&ms.weak.length)?`${DYN[ms.tier+1]} czeka na: ${ms.weak.join(', ')}`:sx?`do ${DYN[ms.tier+1]}: ${fmt(ms.needXP)} XP`:`do ${DYN[ms.tier+1]}: ${(TH[ms.tier]-ms.pct).toFixed(0)}%`;
  return `<div class="hrow"><div class="brand">Crescendo</div><div class="lvl">Lv ${lv.lvl} · ${title(lv.lvl)}</div></div>
- <div class="hmain"><div class="dyn">${ms.pct>=80?'fff':DYN[ms.tier]}</div>
+ <div class="hmain"><div class="dyn">${ms.fff?'fff':DYN[ms.tier]}</div>
  <div class="money"><b>${chf(Math.max(0,ms.left))}</b>do wydania · odblok. ${chf(ms.unlocked)} / ${chf(ms.spendable)}</div></div>
  <div class="bar"><span style="width:${pct}%"></span>${marks}</div>
- <div class="sub"><span>${fmt(Math.max(0,ms.earned))} / ${fmt(ms.plan)} XP · ${ms.pct.toFixed(1)}%</span><span>${ms.tier<5?`do ${DYN[ms.tier+1]}: ${fmt(ms.needXP)} XP`:'pełny budżet 🎉'}</span></div>`}
+ <div class="sub"><span>${sx?`${fmt(Math.max(0,ms.earned))} / ${fmt(ms.plan)} XP · `:''}${ms.pct.toFixed(sx?1:0)}% planu</span><span>${nxt}</span></div>`}
 
 function row(t,ed,c){
  const id=t.id,e=L(sel,id);
@@ -309,18 +328,20 @@ function row(t,ed,c){
  if(t.cal)tags=c&&c[t.cal]?'<span class="tag">w planie</span>':'<span class="tag b">bonus</span>';
  if(t.id==='ga'&&c&&S.settings.gaFromCal&&c.ga)tags=`<span class="tag">plan ${c.ga} h</span>`;
  const st=DAILY.includes(t)?streak(id):0,fire=st>=2?`<span class="fire">🔥${st}</span>`:'';
+ const sx=S.settings.showXP,foc=FOCUS.includes(id)?' · obecny i skupiony':'';
  if(t.tiers){
   const tr=tiersOf(id),n=e?e.c:0,nx=n<tr.length?`następne +${tr[n]} XP`:'max';
-  return `<div class="task ${n?'done':''}"><span class="ic">${t.ic}</span><div class="tn">${t.name}${tags}${fire}<small>${n} × ${t.unit} · ${nx}${n?` · ${fmt(e.xp)} XP`:''}</small></div>
+  return `<div class="task ${n?'done':''}"><span class="ic">${t.ic}</span><div class="tn">${t.name}${tags}${fire}<small>${n} × ${t.unit}${sx?` · ${nx}${n?` · ${fmt(e.xp)} XP`:''}`:foc}</small></div>
   <div class="stp"><button data-act="step" data-d="-1" data-id="${id}" ${!n||!ed?'disabled':''}>−</button><b>${n}</b><button data-act="step" data-d="1" data-id="${id}" ${n>=tr.length||!ed?'disabled':''}>+</button></div></div>`}
- let sub=t.eve?'zaznacz wieczorem':'',dis=!ed;
+ let sub=t.eve?'zaznacz wieczorem':foc.slice(3),dis=!ed;
  if(t.weekCap){const w=weekCount(id,sel);sub=`${w}/${t.weekCap} w tym tygodniu`;if(!e&&w>=t.weekCap)dis=true}
- return `<button class="task ${e?'done':''}" data-act="tog" data-id="${id}" ${dis?'disabled':''}><span class="ic">${t.ic}</span><span class="tn">${t.name}${tags}${fire}<small>${sub}</small></span><span class="xp">${e?'✓ '+e.xp:'+'+xpOf(id)}</span></button>`}
+ return `<button class="task ${e?'done':''}" data-act="tog" data-id="${id}" ${dis?'disabled':''}><span class="ic">${t.ic}</span><span class="tn">${t.name}${tags}${fire}<small>${sub}</small></span><span class="xp">${badge(e,xpOf(id))}</span></button>`}
+const badge=(e,x)=>S.settings.showXP?(e?'✓ '+e.xp:'+'+x):(e?'✓':'○');
 function streak(id){let d=todayS();if(!L(d,id))d=addD(d,-1);let n=0;while(L(d,id)){n++;d=addD(d,-1)}return n}
 
 function vDay(){
  const d=sel,ed=editable(d),c=S.calSynced?S.cal[d]:null;
- let h=`<div class="dnav"><button data-act="nav" data-d="-1" ${d<=S.settings.startDate?'disabled':''}>‹</button><div><b>${DN[dow(d)]}, ${pd(d).getDate()}.${pd(d).getMonth()+1}.</b><small>${fmt(dayEarned(d))} XP · plan dnia ~${fmt(planDay(d))}</small></div><button data-act="nav" data-d="1" ${d>=todayS()?'disabled':''}>›</button></div>`;
+ let h=`<div class="dnav"><button data-act="nav" data-d="-1" ${d<=S.settings.startDate?'disabled':''}>‹</button><div><b>${DN[dow(d)]}, ${pd(d).getDate()}.${pd(d).getMonth()+1}.</b><small>${S.settings.showXP?`${fmt(dayEarned(d))} XP · plan dnia ~${fmt(planDay(d))}`:`${Math.round(dayEarned(d)/planDay(d)*100)}% planu dnia`}</small></div><button data-act="nav" data-d="1" ${d>=todayS()?'disabled':''}>›</button></div>`;
  if(!ed)h+=`<div class="note">Ten dzień jest tylko do podglądu (zamknięty miesiąc albo przed startem).</div>`;
  const ch=[];
  if(c){if(c.strength)ch.push('🏋️ siłownia w planie');if(c.cycling)ch.push(`🚴 rower${c.cycling>1?' ×'+c.cycling:''}`);if(c.ga)ch.push(`🎼 GA ${c.ga} h`);if(c.work9)ch.push('🏢 work 9:00')}
@@ -329,7 +350,7 @@ function vDay(){
  for(const p of PER){if(!p.pen)continue;const cur=periodStart(d,p.len),Q=addD(cur,-p.len),end=addD(cur,-1);
   if(end<S.settings.startDate||diffD(end,d)>3||diffD(end,d)<1)continue;
   const dd=periodDone(p.id,Q,p.len),le=L(d,p.id+'@late');if(dd&&!le)continue;
-  h+=`<button class="task late ${le?'done':''}" data-act="late" data-id="${p.id}" ${ed?'':'disabled'}><span class="ic">${p.ic}</span><span class="tn">Zaległe: ${p.name}<small>${le?'nadrobione — kara anulowana':`kara −${p.pen} zniknie, jeśli zrobisz do ${fd(addD(end,3))}`}</small></span><span class="xp">${le?'✓ '+le.xp:'+'+Math.round(xpOf(p.id)/2)}</span></button>`}
+  h+=`<button class="task late ${le?'done':''}" data-act="late" data-id="${p.id}" ${ed?'':'disabled'}><span class="ic">${p.ic}</span><span class="tn">Zaległe: ${p.name}<small>${le?'nadrobione — kara anulowana':`kara −${p.pen} zniknie, jeśli zrobisz do ${fd(addD(end,3))}`}</small></span><span class="xp">${badge(le,Math.round(xpOf(p.id)/2))}</span></button>`}
  const groups=['Poranek','Jedzenie','Twórczość','Ciało','Higiena cyfrowa','Wieczór','Praca'];
  for(const g of groups){
   let rows=[...DAILY,...DAYX].filter(t=>t.g===g);
@@ -340,12 +361,12 @@ function vDay(){
  h+=`<h3>Dom</h3>`;
  const lw=weekCount('laundry',d),le=L(d,'laundry'),ln=le?le.c:0,ok=laundryOk(d);
  if(ok||ln){const sat=dow(d)===6?' · jeśli pralka wolna':'';
-  h+=`<div class="task ${ln?'done':''}"><span class="ic">🧺</span><div class="tn">Laundry<small>${lw}/3 w tym tyg.${sat} · +${xpOf('laundry')} / load</small></div><div class="stp"><button data-act="laundry" data-d="-1" ${!ln||!ed?'disabled':''}>−</button><b>${ln}</b><button data-act="laundry" data-d="1" ${lw>=3||!ed||!ok?'disabled':''}>+</button></div></div>`}
+  h+=`<div class="task ${ln?'done':''}"><span class="ic">🧺</span><div class="tn">Laundry<small>${lw}/3 w tym tyg.${sat}${S.settings.showXP?` · +${xpOf('laundry')} / load`:''}</small></div><div class="stp"><button data-act="laundry" data-d="-1" ${!ln||!ed?'disabled':''}>−</button><b>${ln}</b><button data-act="laundry" data-d="1" ${lw>=3||!ed||!ok?'disabled':''}>+</button></div></div>`}
  else{const n=nextLaundry(d);h+=`<div class="note">🧺 Pranie: dziś nie twój dzień. Następne: <b>${n?fd(n):'—'}</b>${lw?` · w tym tyg. ${lw}/3`:''}</div>`}
  for(const p of PER){const P=periodStart(d,p.len),end=addD(P,p.len-1),dd=periodDone(p.id,P,p.len),e=L(d,p.id);
   if(dd&&!e){h+=`<div class="task done elsewhere"><span class="ic">${p.ic}</span><span class="tn">${p.name}<small>✓ zrobione ${fd(dd)} · ${p.every}</small></span><span class="xp">✓</span></div>`;continue}
   const left=diffD(d,end);
-  h+=`<button class="task ${e?'done':''}" data-act="per" data-id="${p.id}" ${ed?'':'disabled'}><span class="ic">${p.ic}</span><span class="tn">${p.name}<small>${p.every} · do ${fd(end)}${left<=1&&!e?' ⏰':''}${p.pen?` · inaczej −${p.pen}`:''}</small></span><span class="xp">${e?'✓ '+e.xp:'+'+xpOf(p.id)}</span></button>`}
+  h+=`<button class="task ${e?'done':''}" data-act="per" data-id="${p.id}" ${ed?'':'disabled'}><span class="ic">${p.ic}</span><span class="tn">${p.name}<small>${p.every} · do ${fd(end)}${left<=1&&!e?' ⏰':''}${p.pen?` · inaczej kara`:''}</small></span><span class="xp">${badge(e,xpOf(p.id))}</span></button>`}
  return h}
 
 function vRew(ms){
@@ -361,7 +382,7 @@ function vRew(ms){
  <div class="kv"><span>Odblokowane</span><b>${chf(ms.unlocked)}</b></div>
  <div class="kv"><span>Wydane</span><b>${chf(ms.spent)}</b></div>
  <div class="kv"><span>Zostało</span><b style="color:var(--ok)">${chf(Math.max(0,ms.left))}</b></div></div>
- ${ms.tier<5?`<p class="mut">Jeszcze ${fmt(ms.needXP)} XP do <i>${DYN[ms.tier+1]}</i> → +${chf(ms.spendable/5)}</p>`:'<p class="mut">Pełne 85% odblokowane. Każde 5% ponad 75% dorzuca 5% budżetu do skarbca na koniec miesiąca (fff).</p>'}</div>`;
+ ${ms.tier<5?`<p class="mut">Jeszcze ${S.settings.showXP?fmt(ms.needXP)+' XP':(Math.max(0,TH[ms.tier]-ms.pct)).toFixed(0)+'% planu'} do <i>${DYN[ms.tier+1]}</i> → +${chf(ms.spendable/5)}${ms.weak.length?`<br>⚖️ <i>${DYN[ms.tier+1]}</i> wymaga min. ${FLOOR[ms.tier+1]*100}% w każdym obszarze — brakuje: ${ms.weak.join(', ')}`:''}</p>`:'<p class="mut">Pełne 85% odblokowane. Każde 5% ponad 75% dorzuca 5% budżetu do skarbca na koniec miesiąca (fff).</p>'}</div>`;
  h+=`<div class="card"><h2>Sklep</h2><div class="grid">${S.shop.map(it=>`<div class="item"><button class="x" data-act="rmshop" data-id="${it.id}">×</button><div class="n">${it.i||'🎁'} ${esc(it.n)}</div><div class="c">${chf(it.c)}</div>
   <div class="row"><button class="btn s" data-act="buy" data-id="${it.id}" data-src="month" ${it.c>ms.left||!ed?'disabled':''}>Kup</button>${av>=it.c?`<button class="btn s v" data-act="buy" data-id="${it.id}" data-src="vault">Skarbiec</button>`:''}</div></div>`).join('')}</div>
  <h3>Inny wydatek</h3><div class="row"><input type="text" id="cn" placeholder="co?" style="flex:2"><input type="number" id="cc" placeholder="CHF" style="width:80px"><select id="cs"><option value="month">z budżetu</option><option value="vault">ze skarbca</option></select><button class="btn s" data-act="custom">Kup</button></div>
@@ -384,6 +405,12 @@ function vRew(ms){
 function vProg(ms){
  const lv=levelOf(lifetime());
  let h=`<div class="card"><h2>Level ${lv.lvl} — ${title(lv.lvl)}</h2><div class="bar"><span style="width:${lv.into/lv.need*100}%"></span></div><div class="sub" style="margin-top:8px"><span>${fmt(lv.into)} / ${fmt(lv.need)} XP</span><span>łącznie ${fmt(lifetime())}</span></div><p class="mut">Tytuły: Uczeń → Czeladnik (5) → Wirtuoz (10) → Kapelmistrz (15) → Maestro (20)</p></div>`;
+ {const start=maxS(S.curMonth+'-01',S.settings.startDate),tdy=todayS()<start?start:todayS(),pace=rangeBal(start,tdy,[]);
+  h+=`<div class="card"><h2>Balans — ${monthName(S.curMonth)}</h2>${BCATS.map(c=>{const b=ms.bal[c],w=Math.min(1,b.ratio/CAP)*100,pc=b.plan?pace.bal[c].plan/b.plan/CAP*100:0;
+   return `<div class="share"><div class="l"><span>${c}${b.capped?' <span class="tag b">max</span>':''}</span><span>${(b.ratio*100).toFixed(0)}%</span></div><div class="t" style="position:relative;overflow:visible"><span style="width:${w}%;${b.ratio<FLOOR[5]?'background:var(--acc)':''}"></span><i style="position:absolute;left:${pc}%;top:-3px;width:2px;height:12px;background:var(--tx);opacity:.6"></i></div></div>`}).join('')}
+  <p class="mut">Pionowa kreska = gdzie „powinieneś” być dziś. Każdy obszar liczy się w pełni do 110% swojego planu, nadwyżka już tylko w 25% — nie da się nadrobić jednego obszaru drugim. <i>f</i> wymaga min. 30%, <i>ff</i> i <i>fff</i> min. 50% w każdym obszarze.</p></div>`;
+  const rf=Object.entries(S.refl||{}).filter(([k,v])=>!v.skipped).sort().reverse().slice(0,4);
+  h+=`<div class="card"><h2>Refleksje tygodnia</h2>${rf.length?rf.map(([k,v])=>`<div style="margin:8px 0"><b class="mut">tydzień od ${fd(k)}</b>${v.a?`<div>🎯 Dla punktów: ${esc(v.a)}</div>`:''}${v.b?`<div>🫥 Przestało się opłacać: ${esc(v.b)}</div>`:''}${v.c?`<div>🔧 Zmiana: ${esc(v.c)}</div>`:''}</div>`).join(''):'<p class="mut">Jeszcze brak. Pojawia się sama w niedzielę wieczorem.</p>'}<button class="btn s g" data-act="refl">Napisz teraz</button></div>`}
  const pens=penalties().filter(p=>p.end>=addD(todayS(),-35));
  if(pens.length)h+=`<div class="card"><h2>Kary</h2>${pens.map(p=>`<div class="kv"><span>${ALL[p.id].ic} ${ALL[p.id].name} (do ${fd(p.end)})</span><b style="color:var(--bad)">−${p.amt}${p.revocable?` <small class="mut">da się cofnąć do ${fd(p.deadline)}</small>`:''}</b></div>`).join('')}</div>`;
  const days=[];for(let i=13;i>=0;i--){const d=addD(todayS(),-i);if(d>=S.settings.startDate)days.push(d)}
@@ -394,7 +421,7 @@ function vProg(ms){
  const sts=DAILY.map(t=>[t,streak(t.id)]).filter(x=>x[1]>=2).sort((a,b)=>b[1]-a[1]);
  if(sts.length)h+=`<div class="card"><h2>Passy 🔥</h2>${sts.map(([t,n])=>`<div class="kv"><span>${t.ic} ${t.name}</span><b>${n} dni</b></div>`).join('')}</div>`;
  const past=Object.entries(S.months).filter(([k,m])=>m.result).sort().reverse();
- if(past.length)h+=`<div class="card"><h2>Poprzednie miesiące</h2>${past.map(([k,m])=>`<div class="kv"><span>${monthName(k)} · <i>${m.result.pct>=80?'fff':DYN[m.result.tier]}</i> ${m.result.qualified?'✓':''}</span><b>${m.result.pct.toFixed(0)}% · wydane ${chf(m.result.spent)}</b></div>`).join('')}</div>`;
+ if(past.length)h+=`<div class="card"><h2>Poprzednie miesiące</h2>${past.map(([k,m])=>`<div class="kv"><span>${monthName(k)} · <i>${m.result.fff?'fff':DYN[m.result.tier]}</i> ${m.result.qualified?'✓':''}</span><b>${m.result.pct.toFixed(0)}% · wydane ${chf(m.result.spent)}</b></div>`).join('')}</div>`;
  return h}
 
 const SCRIPT=["const TOKEN = 'ZMIEN-NA-COS-TAJNEGO';","","function doGet(e) {","  if (e.parameter.token !== TOKEN) return out({ error: 'bad token' });","  const start = new Date(e.parameter.start + 'T00:00:00');","  const end = new Date(e.parameter.end + 'T23:59:59');","  const events = [];","  CalendarApp.getAllCalendars().forEach(cal => {","    cal.getEvents(start, end).forEach(ev => events.push({","      cal: cal.getName(),","      title: ev.getTitle(),","      start: ev.getStartTime().toISOString(),","      end: ev.getEndTime().toISOString(),","      allDay: ev.isAllDayEvent()","    }));","  });","  return out({ events });","}","","function out(o) {","  return ContentService.createTextOutput(JSON.stringify(o))","    .setMimeType(ContentService.MimeType.JSON);","}"].join('\n');
@@ -406,6 +433,7 @@ function vSet(){
  <div class="row"><span style="flex:1">Budżet na rozrywkę / mies. (CHF)</span>${inp('budget','number','90px')}</div>
  <p class="mut">Zmiana działa od następnego miesiąca. Ten miesiąc: ${chf(S.months[S.curMonth].budget)}.</p>
  <div class="row"><span style="flex:1">Start gry</span><b>${fd(st.startDate)}</b></div></div>
+ <div class="card"><h2>Wyświetlanie</h2><label class="row"><input type="checkbox" data-set="showXP" ${st.showXP?'checked':''}> Pokazuj liczby XP przy taskach</label><p class="mut">Domyślnie ukryte: mniej liczenia w głowie, więcej „po prostu zrób”. Pełne liczby zawsze są w Postępie i tutaj.</p></div>
  <div class="card"><h2>Kalendarz Google</h2>
  <div class="row"><input type="url" data-set="calUrl" value="${esc(st.calUrl)}" placeholder="https://script.google.com/macros/s/…/exec" style="flex:1"></div>
  <div class="row" style="margin-top:6px"><span>Token</span>${inp('calToken')}</div>
@@ -439,6 +467,23 @@ function transferModal(){
  const items=p.flatMap(t=>t.items),tot=items.reduce((a,i)=>a+i.amt,0);
  modal(`<h2>🏦 Przelew do skarbca</h2><p class="mut">Przenieś w apce banku do osobnego portfela oszczędności:</p>${items.map(i=>`<div class="kv"><span>${esc(i.label)}</span><b>${chf(i.amt)}</b></div>`).join('')}<div class="bigm">${chf(tot)}</div><div class="row"><button class="btn" data-act="trdone">Zrobione ✓</button><button class="btn g" data-act="close">Później</button></div>`)}
 
+let pendFocus=null;
+function askFocus(fn){pendFocus=fn;modal(`<h2>🎯 Obecny i skupiony?</h2><p class="mut">Nie musi być genialnie ani produktywnie. Liczy się, że byłeś przy tym naprawdę.</p><div class="row"><button class="btn" data-act="focusyes">Tak ✓</button><button class="btn g" data-act="close">Jeszcze nie</button></div>`)}
+function reflDue(){S.refl=S.refl||{};const t=todayS(),ws=periodStart(t,7),prev=addD(ws,-7);
+ if(addD(prev,6)>=S.settings.startDate&&!S.refl[prev])return prev;
+ if(dow(t)===0&&new Date().getHours()>=17&&!S.refl[ws])return ws;return null}
+function reflModal(w){
+ S.refl=S.refl||{};const old=S.refl[w]||{},end=addD(w,6),to=end<todayS()?end:todayS(),r=rangeBal(maxS(w,S.settings.startDate),to,[]);
+ const bars=BCATS.map(c=>`<div class="share"><div class="l"><span>${c}</span><span>${(r.bal[c].ratio*100).toFixed(0)}%</span></div><div class="t"><span style="width:${Math.min(1,r.bal[c].ratio/CAP)*100}%"></span></div></div>`).join('');
+ const ta=(id,v)=>`<textarea id="${id}" rows="2">${esc(v||'')}</textarea>`;
+ modal(`<h2>🎼 Refleksja tygodnia</h2><p class="mut">tydzień od ${fd(w)} · 30 sekund, bez oceniania</p>${bars}
+ <p>Co zrobiłem głównie dla punktów?</p>${ta('ra',old.a)}
+ <p>Co ważnego przestało mi się „opłacać”?</p>${ta('rb',old.b)}
+ <p>Coś do zmiany w wagach? <span class="mut">(opcjonalnie)</span></p>${ta('rc',old.c)}
+ <div class="row" style="margin-top:10px"><button class="btn" data-act="reflsave" data-w="${w}">Zapisz</button><button class="btn g" data-act="reflskip" data-w="${w}">Pomiń</button></div>`,true)}
+function nextModal(){if(S.transfers.some(t=>!t.done))return transferModal();const w=reflDue();if(w)reflModal(w)}
+function doTog(id,pos){const t=ALL[id];act(()=>{if(L(sel,id))delE(sel,id);else{if(t.weekCap&&weekCount(id,sel)>=t.weekCap)return toast('Limit tygodniowy osiągnięty');setE(sel,id,{c:1,xp:xpOf(id)})}},pos)}
+function doStep(id,dd,pos){act(()=>{const tr=tiersOf(id),e=L(sel,id),n=(e?e.c:0)+dd;if(n<0||n>tr.length)return;n?setE(sel,id,{c:n,xp:tierSum(id,n)}):delE(sel,id)},pos)}
 function snap(){return{tier:monthStats(S.curMonth).tier,xp:lifetime()}}
 function act(fn,ev){
  const b=snap();fn();save();render();const a=snap();
@@ -466,8 +511,12 @@ document.addEventListener('click',ev=>{
  const a=b.dataset.act,id=b.dataset.id;
  switch(a){
   case'nav':sel=addD(sel,+b.dataset.d);render();break;
-  case'tog':{const t=ALL[id];act(()=>{if(L(sel,id))delE(sel,id);else{if(t.weekCap&&weekCount(id,sel)>=t.weekCap)return toast('Limit tygodniowy osiągnięty');setE(sel,id,{c:1,xp:xpOf(id)})}},ev);break}
-  case'step':act(()=>{const tr=tiersOf(id),e=L(sel,id),n=(e?e.c:0)+ +b.dataset.d;if(n<0||n>tr.length)return;n?setE(sel,id,{c:n,xp:tierSum(id,n)}):delE(sel,id)},ev);break;
+  case'tog':{const pos={clientX:ev.clientX,clientY:ev.clientY};if(FOCUS.includes(id)&&!L(sel,id))askFocus(()=>doTog(id,pos));else doTog(id,pos);break}
+  case'step':{const pos={clientX:ev.clientX,clientY:ev.clientY},dd=+b.dataset.d;if(FOCUS.includes(id)&&dd>0)askFocus(()=>doStep(id,dd,pos));else doStep(id,dd,pos);break}
+  case'focusyes':{closeModal();const f=pendFocus;pendFocus=null;if(f)f();break}
+  case'refl':reflModal(periodStart(todayS(),7));break;
+  case'reflsave':S.refl=S.refl||{};S.refl[b.dataset.w]={a:$('#ra').value.trim(),b:$('#rb').value.trim(),c:$('#rc').value.trim(),at:todayS()};save();closeModal();render();toast('Zapisane. Dzięki za szczerość 🙏');break;
+  case'reflskip':S.refl=S.refl||{};S.refl[b.dataset.w]=S.refl[b.dataset.w]||{skipped:true};save();closeModal();render();break;
   case'laundry':act(()=>{const e=L(sel,'laundry'),d=+b.dataset.d,n=(e?e.c:0)+d;if(n<0)return;if(d>0&&weekCount('laundry',sel)>=LAUNDRY.cap)return toast('Max 3 prania w tygodniu');n?setE(sel,'laundry',{c:n,xp:n*xpOf('laundry')}):delE(sel,'laundry')},ev);break;
   case'per':{const p=ALL[id],P=periodStart(sel,p.len);act(()=>{if(L(sel,id))delE(sel,id);else if(periodDone(id,P,p.len))toast('Już zrobione w tym okresie');else setE(sel,id,{c:1,xp:xpOf(id),p:P})},ev);break}
   case'late':{const p=ALL[id],Q=addD(periodStart(sel,p.len),-p.len),k=id+'@late';act(()=>{if(L(sel,k))delE(sel,k);else setE(sel,k,{c:1,xp:Math.round(xpOf(id)/2),p:Q})},ev);break}
@@ -478,7 +527,7 @@ document.addEventListener('click',ev=>{
   case'undo':{const p=S.purchases.find(x=>x.id===id);if(!p)break;if(p.src==='vault'){S.vault.bal=r2(S.vault.bal+p.cost);S.vault.patience=p.prevPatience}S.purchases=S.purchases.filter(x=>x.id!==id);save();render();toast('Cofnięto');break}
   case'pause':if(confirm('Oznaczyć ten miesiąc jako pauzę (liczy się do cierpliwości skarbca)?')){S.months[S.curMonth].paused=true;S.vault.lastPause=S.curMonth;save();render()}break;
   case'showtr':transferModal();break;
-  case'trdone':S.transfers.forEach(t=>t.done=true);save();closeModal();render();toast('Super, skarbiec rośnie 🏦');break;
+  case'trdone':S.transfers.forEach(t=>t.done=true);save();closeModal();render();toast('Super, skarbiec rośnie 🏦');setTimeout(nextModal,600);break;
   case'close':closeModal();break;
   case'sync':syncCal();break;
   case'copy':navigator.clipboard.writeText(SCRIPT).then(()=>toast('Skopiowane'));break;
@@ -497,7 +546,7 @@ document.addEventListener('change',ev=>{
 // ---------- boot ----------
 load();
 if(!S){modal(`<div class="dynbig" style="font-size:64px">Crescendo</div><p>Taski → XP → dynamika → budżet na przyjemności.</p><div class="kv"><span>Budżet na rozrywkę / mies.</span><span><input id="sb" type="number" value="150" style="width:80px"> CHF</span></div><div class="kv"><span>Start gry</span><input id="sd" type="date" value="${todayS()}"></div><button class="btn" style="width:100%;margin-top:14px" data-act="setup">Start ▶</button>`,true)}
-else{rollMonths();render();transferModal();if(S.settings.calUrl)syncCal(true)}
+else{rollMonths();render();nextModal();if(S.settings.calUrl)syncCal(true)}
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&S){const t=todayS();if(sel>t)sel=t;rollMonths();render()}});
 </script>
 </body>
