@@ -259,15 +259,24 @@ function monthStats(ym){
  const spendable=B*(1-S.settings.savePct/100),unlocked=r2(spendable*tier/5);
  const spent=S.purchases.filter(p=>p.src==='month'&&p.ym===ym).reduce((a,p)=>a+p.cost,0);
  const needXP=tier<5?Math.max(0,TH[tier]/100*plan-earned):0;
- return{plan,earned,raw:r.raw,bal:r.bal,pen,pens,pct,tier,rawTier,blocked,weak,fff,unlocked,spent,left:r2(unlocked-spent),B,spendable,needXP}}
+ const avgDay=plan/Math.max(1,diffD(start,end)+1),needDays=Math.ceil(needXP/Math.max(1,avgDay));
+ return{plan,earned,raw:r.raw,bal:r.bal,pen,pens,pct,tier,rawTier,blocked,weak,fff,unlocked,spent,left:r2(unlocked-spent),B,spendable,needXP,needDays}}
+// jaka dynamika odblokuje kwotę c (przy obecnych wydatkach)
+function tierFor(ms,c){for(let k=1;k<=5;k++)if(ms.spendable*k/5-ms.spent+1e-9>=c)return k;return 0}
+// przykładowe nagrody za kwotę
+function examples(amt){const it=S.shop.filter(x=>x.c<=amt).sort((a,b)=>b.c-a.c);const out=[];let left=amt;for(const x of it){if(x.c<=left&&out.length<3){out.push(x);left-=x.c}}return out.map(x=>(x.i||'🎁')+' '+esc(x.n)).join(' + ')||'—'}
 const vaultAvail=()=>r2(S.vault.bal*ACCESS[Math.min(12,S.vault.patience)]/100);
 
 // ---------- month rollover ----------
-function openMonth(ym,carry){
- const B=S.settings.budget,sav=r2(B*S.settings.savePct/100);
+function openMonth(ym,carry,prev){
+ const B=S.settings.budget,sav=r2(B*S.settings.savePct/100),first=!prev;
  S.months[ym]={budget:B,savings:sav};
  S.vault.bal=r2(S.vault.bal+sav);
- S.transfers.push({id:uid(),ym,items:[{label:`${S.settings.savePct}% budżetu — ${monthName(ym)}`,amt:sav},...carry],done:false})}
+ const carrySum=carry.reduce((a,i)=>a+i.amt,0);
+ // portfel + doładowanie − (oszczędności + carry) = B − oszczędności
+ const topup=first?B:Math.max(0,r2(B+carrySum-prev.walletNow));
+ S.transfers.push({id:uid(),ym,items:[{label:`${S.settings.savePct}% budżetu — ${monthName(ym)}`,amt:sav},...carry],
+  first,walletNow:first?0:prev.walletNow,unearned:first?0:prev.unearned,topup,budget:B,done:false})}
 function closeMonth(ym){
  const r=monthStats(ym),m=S.months[ym];
  const leftover=Math.max(0,r2(r.unlocked-r.spent));
@@ -279,8 +288,11 @@ function closeMonth(ym){
  const carry=[];
  if(leftover>0)carry.push({label:`Niewydane — ${monthName(ym)}`,amt:leftover});
  if(bonus>0)carry.push({label:`Bonus fff — ${monthName(ym)}`,amt:bonus});
- return carry}
-function rollMonths(){const now=ymOf(todayS());while(S.curMonth<now){const c=closeMonth(S.curMonth);S.curMonth=nextYM(S.curMonth);openMonth(S.curMonth,c)}save()}
+ // w portfelu Rozrywka zostaje nieodblokowana część (minus bonus fff, który też idzie do skarbca)
+ const walletNow=r2(r.spendable-r.spent),unearned=Math.max(0,r2(walletNow-leftover));
+ m.result.unearned=unearned;
+ return{carry,walletNow,unearned}}
+function rollMonths(){const now=ymOf(todayS());while(S.curMonth<now){const c=closeMonth(S.curMonth);S.curMonth=nextYM(S.curMonth);openMonth(S.curMonth,c.carry,c)}save()}
 
 // ---------- calendar ----------
 function rx(k){const s=S.settings[k];if(!s)return{test:()=>false};return new RegExp(s,k==='gaRe'?'':'i')}
@@ -315,7 +327,7 @@ function hdr(ms){
  const lv=levelOf(lifetime()),pct=Math.min(100,ms.pct);
  const marks=TH.map((t,i)=>`<i class="${ms.pct>=t?'hit':''}" style="left:${t}%"></i><em class="${ms.pct>=t?'hit':''}" style="left:${t}%">${DYN[i+1]}</em>`).join('');
  const sx=S.settings.showXP;
- const nxt=ms.tier>=5?'pełny budżet 🎉':ms.blocked||(ms.needXP===0&&ms.weak.length)?`${DYN[ms.tier+1]} czeka na: ${ms.weak.join(', ')}`:sx?`do ${DYN[ms.tier+1]}: ${fmt(ms.needXP)} XP`:`do ${DYN[ms.tier+1]}: ${(TH[ms.tier]-ms.pct).toFixed(0)}%`;
+ const nxt=ms.tier>=5?'pełny budżet 🎉':ms.blocked||(ms.needXP===0&&ms.weak.length)?`${DYN[ms.tier+1]} czeka na: ${ms.weak.join(', ')}`:`<i>${DYN[ms.tier+1]}</i> za ~${ms.needDays} ${ms.needDays===1?'dzień':'dni'} dobrej roboty → +${chf(ms.spendable/5)}${sx?` (${fmt(ms.needXP)} XP)`:''}`;
  return `<div class="hrow"><div class="brand">Crescendo</div><div class="lvl">Lv ${lv.lvl} · ${title(lv.lvl)}</div></div>
  <div class="hmain"><div class="dyn">${ms.fff?'fff':DYN[ms.tier]}</div>
  <div class="money"><b>${chf(Math.max(0,ms.left))}</b>do wydania · odblok. ${chf(ms.unlocked)} / ${chf(ms.spendable)}</div></div>
@@ -375,16 +387,18 @@ function vRew(ms){
  const pend=S.transfers.filter(t=>!t.done);
  if(pend.length)h+=`<div class="note warn">🏦 Masz niewykonany przelew do skarbca. <button class="btn s" data-act="showtr">Pokaż</button></div>`;
  h+=`<div class="card"><h2>Budżet — ${monthName(S.curMonth)}</h2>
- <div class="ladder">${['tacet',...DYN.slice(1)].map((n,i)=>`<div class="${i===ms.tier?'on':i<ms.tier?'past':''}">${n}<br>${i?chf(ms.spendable*i/5):'0'}</div>`).join('')}</div>
+ <p class="mut" style="margin-top:0">Każda dynamika odblokowuje kolejne ${chf(ms.spendable/5)} do wydania w tym miesiącu. Kwoty się sumują. Wydajesz kiedy chcesz, a niewydane trafia na koniec miesiąca do skarbca.</p>
+ ${DYN.slice(1).map((n,j)=>{const i=j+1,tot=ms.spendable*i/5,st=i<=ms.tier?'✅':i===ms.tier+1?'👉':'🔒';return `<div class="kv" style="${i===ms.tier+1?'background:#2a2416;border-radius:8px;padding:6px':''}"><span>${st} <i style="font-family:Playfair Display,serif;font-weight:900;color:var(--acc)">${n}</i> <span class="mut">· ${TH[j]}% planu${FLOOR[i]?` · min. ${FLOOR[i]*100}% w każdym obszarze`:''}</span><br><small class="mut">razem ${chf(tot)} — np. ${examples(tot-ms.spent)}</small></span><b>+${chf(ms.spendable/5)}</b></div>`}).join('')}
  <div style="margin-top:10px">
  <div class="kv"><span>Budżet miesiąca</span><b>${chf(ms.B)}</b></div>
  <div class="kv"><span>→ skarbiec (${S.settings.savePct}%)</span><b>${chf(ms.B*S.settings.savePct/100)}</b></div>
  <div class="kv"><span>Odblokowane</span><b>${chf(ms.unlocked)}</b></div>
  <div class="kv"><span>Wydane</span><b>${chf(ms.spent)}</b></div>
- <div class="kv"><span>Zostało</span><b style="color:var(--ok)">${chf(Math.max(0,ms.left))}</b></div></div>
+ <div class="kv"><span>Zostało</span><b style="color:var(--ok)">${chf(Math.max(0,ms.left))}</b></div>
+ <div class="kv"><span class="mut">W portfelu Rozrywka powinno być</span><b class="mut">${chf(r2(ms.spendable-ms.spent))}</b></div></div>
  ${ms.tier<5?`<p class="mut">Jeszcze ${S.settings.showXP?fmt(ms.needXP)+' XP':(Math.max(0,TH[ms.tier]-ms.pct)).toFixed(0)+'% planu'} do <i>${DYN[ms.tier+1]}</i> → +${chf(ms.spendable/5)}${ms.weak.length?`<br>⚖️ <i>${DYN[ms.tier+1]}</i> wymaga min. ${FLOOR[ms.tier+1]*100}% w każdym obszarze — brakuje: ${ms.weak.join(', ')}`:''}</p>`:'<p class="mut">Pełne 85% odblokowane. Każde 5% ponad 75% dorzuca 5% budżetu do skarbca na koniec miesiąca (fff).</p>'}</div>`;
  h+=`<div class="card"><h2>Sklep</h2><div class="grid">${S.shop.map(it=>`<div class="item"><button class="x" data-act="rmshop" data-id="${it.id}">×</button><div class="n">${it.i||'🎁'} ${esc(it.n)}</div><div class="c">${chf(it.c)}</div>
-  <div class="row"><button class="btn s" data-act="buy" data-id="${it.id}" data-src="month" ${it.c>ms.left||!ed?'disabled':''}>Kup</button>${av>=it.c?`<button class="btn s v" data-act="buy" data-id="${it.id}" data-src="vault">Skarbiec</button>`:''}</div></div>`).join('')}</div>
+  <div class="row"><button class="btn s" data-act="buy" data-id="${it.id}" data-src="month" ${it.c>ms.left||!ed?'disabled':''}>${it.c<=ms.left?'Kup':(tierFor(ms,it.c)?'🔒 od '+DYN[tierFor(ms,it.c)]:'🔒 skarbiec')}</button>${av>=it.c?`<button class="btn s v" data-act="buy" data-id="${it.id}" data-src="vault">Skarbiec</button>`:''}</div></div>`).join('')}</div>
  <h3>Inny wydatek</h3><div class="row"><input type="text" id="cn" placeholder="co?" style="flex:2"><input type="number" id="cc" placeholder="CHF" style="width:80px"><select id="cs"><option value="month">z budżetu</option><option value="vault">ze skarbca</option></select><button class="btn s" data-act="custom">Kup</button></div>
  <details><summary>Dodaj pozycję do sklepu</summary><div class="row" style="margin-top:8px"><input type="text" id="si" placeholder="emoji" style="width:60px"><input type="text" id="sn" placeholder="nazwa" style="flex:1"><input type="number" id="sc" placeholder="CHF" style="width:80px"><button class="btn s g" data-act="addshop">Dodaj</button></div></details></div>`;
  const sav=S.settings.budget*S.settings.savePct/100,pat=Math.min(12,v.patience);
@@ -464,8 +478,14 @@ function render(){
 
 function transferModal(){
  const p=S.transfers.filter(t=>!t.done);if(!p.length)return;
- const items=p.flatMap(t=>t.items),tot=items.reduce((a,i)=>a+i.amt,0);
- modal(`<h2>🏦 Przelew do skarbca</h2><p class="mut">Przenieś w apce banku do osobnego portfela oszczędności:</p>${items.map(i=>`<div class="kv"><span>${esc(i.label)}</span><b>${chf(i.amt)}</b></div>`).join('')}<div class="bigm">${chf(tot)}</div><div class="row"><button class="btn" data-act="trdone">Zrobione ✓</button><button class="btn g" data-act="close">Później</button></div>`)}
+ const blocks=p.map(t=>{const tot=t.items.reduce((a,i)=>a+i.amt,0),B=t.budget||S.settings.budget;
+  const s1=t.topup==null?'':t.first
+   ?`<div class="kv"><span><b>1.</b> Konto główne → portfel <b>Rozrywka</b><br><small class="mut">ustaw portfel na ${chf(B)}</small></span><b>${chf(B)}</b></div>`
+   :`<div class="kv"><span><b>1.</b> Konto główne → portfel <b>Rozrywka</b><br><small class="mut">w portfelu powinno teraz być ${chf(t.walletNow)}, w tym ${chf(t.unearned)} nieodblokowane — dlatego doładowujesz ${chf(B)} − ${chf(t.unearned)}</small></span><b>${t.topup>0?chf(t.topup):'0 — nic'}</b></div>`;
+  return `<h3>${monthName(t.ym)}</h3>${s1}
+  <div class="kv"><span><b>${t.topup==null?'':'2. '}</b>Portfel Rozrywka → portfel <b>Skarbiec</b><br>${t.items.map(i=>`<small class="mut">${esc(i.label)}: ${chf(i.amt)}</small>`).join('<br>')}</span><b>${chf(tot)}</b></div>
+  ${t.topup==null?'':`<p class="mut">✔️ Po wszystkim w Rozrywce powinno być <b>${chf(r2(B-t.items[0].amt))}</b>, czyli tyle, ile możesz maksymalnie odblokować w tym miesiącu.</p>`}`}).join('');
+ modal(`<h2>🏦 Początek miesiąca</h2><p class="mut">Zrób w apce banku:</p>${blocks}<div class="row" style="margin-top:10px"><button class="btn" data-act="trdone">Zrobione ✓</button><button class="btn g" data-act="close">Później</button></div>`)}
 
 let pendFocus=null;
 function askFocus(fn){pendFocus=fn;modal(`<h2>🎯 Obecny i skupiony?</h2><p class="mut">Nie musi być genialnie ani produktywnie. Liczy się, że byłeś przy tym naprawdę.</p><div class="row"><button class="btn" data-act="focusyes">Tak ✓</button><button class="btn g" data-act="close">Jeszcze nie</button></div>`)}
