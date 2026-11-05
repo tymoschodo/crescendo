@@ -189,7 +189,26 @@ const DEFSHOP=[{n:'Kino',c:12,i:'🎬'},{n:'Koncert / teatr',c:15,i:'🎭'},{n:'
 // ---------- state ----------
 const KEY='crescendo-v1';
 let S=null,tab='day',sel=todayS();
-const save=()=>localStorage.setItem(KEY,JSON.stringify(S));
+let pushT=null,syncState='';
+const syncOn=()=>S&&S.settings.calUrl&&S.settings.calToken;
+const saveLocal=()=>localStorage.setItem(KEY,JSON.stringify(S));
+function save(){S.updatedAt=Date.now();saveLocal();if(syncOn()){clearTimeout(pushT);syncState='…';pushT=setTimeout(push,1500)}}
+function adopt(state,at){const keep={calUrl:S.settings.calUrl,calToken:S.settings.calToken};S=state;S.settings={...DEFSET,...S.settings,...keep};S.syncBase=at;saveLocal()}
+async function push(){
+ try{const st=S.settings;
+  const r=await fetch(st.calUrl,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({token:st.calToken,state:S,updatedAt:S.updatedAt,base:S.syncBase||0})});
+  const j=await r.json();if(j.error)throw new Error(j.error);
+  if(j.conflict){adopt(j.state,j.updatedAt);rollMonths();syncState='✓';render();toast('Na innym urządzeniu były nowsze zmiany — wczytałem je. Jeśli coś zniknęło, odhacz jeszcze raz.')}
+  else{S.syncBase=j.updatedAt;saveLocal();syncState='✓';updSync()}
+ }catch(e){syncState='⚠️';updSync()}}
+async function pull(){
+ if(!syncOn())return;
+ try{const st=S.settings,r=await fetch(st.calUrl+(st.calUrl.includes('?')?'&':'?')+new URLSearchParams({token:st.calToken,action:'load'})),j=await r.json();
+  if(j.error)throw new Error(j.error);
+  if(j.state&&j.updatedAt>(S.syncBase||0)){adopt(j.state,j.updatedAt);syncState='✓';rollMonths();render();return true}
+  if(!j.state){syncState='…';save()}else syncState='✓';updSync()
+ }catch(e){syncState='⚠️';updSync()}}
+function updSync(){const e=document.getElementById('syncdot');if(e)e.textContent=syncState?'☁️'+syncState:''}
 function load(){try{S=JSON.parse(localStorage.getItem(KEY))}catch(e){S=null}if(S)S.settings={...DEFSET,...S.settings}}
 function fresh(B,start){return{v:1,settings:{...DEFSET,budget:B,startDate:start,xp:{}},log:{},cal:{},calSynced:null,months:{},curMonth:ymOf(start),
  vault:{bal:0,patience:0,lastPause:null},purchases:[],transfers:[],shop:DEFSHOP.map(x=>({...x,id:uid()})),seenTier:{},seenLvl:1}}
@@ -328,7 +347,7 @@ function hdr(ms){
  const marks=TH.map((t,i)=>`<i class="${ms.pct>=t?'hit':''}" style="left:${t}%"></i><em class="${ms.pct>=t?'hit':''}" style="left:${t}%">${DYN[i+1]}</em>`).join('');
  const sx=S.settings.showXP;
  const nxt=ms.tier>=5?'pełny budżet 🎉':ms.blocked||(ms.needXP===0&&ms.weak.length)?`${DYN[ms.tier+1]} czeka na: ${ms.weak.join(', ')}`:`<i>${DYN[ms.tier+1]}</i> za ~${ms.needDays} ${ms.needDays===1?'dzień':'dni'} dobrej roboty → +${chf(ms.spendable/5)}${sx?` (${fmt(ms.needXP)} XP)`:''}`;
- return `<div class="hrow"><div class="brand">Crescendo</div><div class="lvl">Lv ${lv.lvl} · ${title(lv.lvl)}</div></div>
+ return `<div class="hrow"><div class="brand">Crescendo</div><div class="lvl"><span id="syncdot">${syncState?'☁️'+syncState:''}</span> Lv ${lv.lvl} · ${title(lv.lvl)}</div></div>
  <div class="hmain"><div class="dyn">${ms.fff?'fff':DYN[ms.tier]}</div>
  <div class="money"><b>${chf(Math.max(0,ms.left))}</b>do wydania · odblok. ${chf(ms.unlocked)} / ${chf(ms.spendable)}</div></div>
  <div class="bar"><span style="width:${pct}%"></span>${marks}</div>
@@ -438,7 +457,7 @@ function vProg(ms){
  if(past.length)h+=`<div class="card"><h2>Poprzednie miesiące</h2>${past.map(([k,m])=>`<div class="kv"><span>${monthName(k)} · <i>${m.result.fff?'fff':DYN[m.result.tier]}</i> ${m.result.qualified?'✓':''}</span><b>${m.result.pct.toFixed(0)}% · wydane ${chf(m.result.spent)}</b></div>`).join('')}</div>`;
  return h}
 
-const SCRIPT=["const TOKEN = 'ZMIEN-NA-COS-TAJNEGO';","","function doGet(e) {","  if (e.parameter.token !== TOKEN) return out({ error: 'bad token' });","  const start = new Date(e.parameter.start + 'T00:00:00');","  const end = new Date(e.parameter.end + 'T23:59:59');","  const events = [];","  CalendarApp.getAllCalendars().forEach(cal => {","    cal.getEvents(start, end).forEach(ev => events.push({","      cal: cal.getName(),","      title: ev.getTitle(),","      start: ev.getStartTime().toISOString(),","      end: ev.getEndTime().toISOString(),","      allDay: ev.isAllDayEvent()","    }));","  });","  return out({ events });","}","","function out(o) {","  return ContentService.createTextOutput(JSON.stringify(o))","    .setMimeType(ContentService.MimeType.JSON);","}"].join('\n');
+const SCRIPT=["const TOKEN = 'ZMIEN-NA-COS-TAJNEGO';", "const FILE = 'crescendo-state.json';", "", "function doGet(e) {", "  if (e.parameter.token !== TOKEN) return out({ error: 'bad token' });", "  if (e.parameter.action === 'load') return out(JSON.parse(file_().getBlob().getDataAsString() || '{}'));", "  const start = new Date(e.parameter.start + 'T00:00:00');", "  const end = new Date(e.parameter.end + 'T23:59:59');", "  const events = [];", "  CalendarApp.getAllCalendars().forEach(cal => {", "    cal.getEvents(start, end).forEach(ev => events.push({", "      cal: cal.getName(),", "      title: ev.getTitle(),", "      start: ev.getStartTime().toISOString(),", "      end: ev.getEndTime().toISOString(),", "      allDay: ev.isAllDayEvent()", "    }));", "  });", "  return out({ events });", "}", "", "function doPost(e) {", "  const b = JSON.parse(e.postData.contents);", "  if (b.token !== TOKEN) return out({ error: 'bad token' });", "  const lock = LockService.getScriptLock();", "  lock.waitLock(10000);", "  try {", "    const f = file_();", "    const cur = JSON.parse(f.getBlob().getDataAsString() || '{}');", "    if (cur.updatedAt && cur.updatedAt > (b.base || 0))", "      return out({ conflict: true, updatedAt: cur.updatedAt, state: cur.state });", "    f.setContent(JSON.stringify({ updatedAt: b.updatedAt, state: b.state }));", "    return out({ ok: true, updatedAt: b.updatedAt });", "  } finally {", "    lock.releaseLock();", "  }", "}", "", "function file_() {", "  const it = DriveApp.getFilesByName(FILE);", "  return it.hasNext() ? it.next() : DriveApp.createFile(FILE, '{}', 'application/json');", "}", "", "function out(o) {", "  return ContentService.createTextOutput(JSON.stringify(o))", "    .setMimeType(ContentService.MimeType.JSON);", "}"].join('\n');
 
 function vSet(){
  const st=S.settings,inp=(k,t='text',w='')=>`<input type="${t}" data-set="${k}" value="${esc(st[k])}" ${w?`style="width:${w}"`:'style="flex:1"'}>`;
@@ -448,15 +467,15 @@ function vSet(){
  <p class="mut">Zmiana działa od następnego miesiąca. Ten miesiąc: ${chf(S.months[S.curMonth].budget)}.</p>
  <div class="row"><span style="flex:1">Start gry</span><b>${fd(st.startDate)}</b></div></div>
  <div class="card"><h2>Wyświetlanie</h2><label class="row"><input type="checkbox" data-set="showXP" ${st.showXP?'checked':''}> Pokazuj liczby XP przy taskach</label><p class="mut">Domyślnie ukryte: mniej liczenia w głowie, więcej „po prostu zrób”. Pełne liczby zawsze są w Postępie i tutaj.</p></div>
- <div class="card"><h2>Kalendarz Google</h2>
+ <div class="card"><h2>Google: kalendarz + synchronizacja ☁️</h2><p class="mut">Jeden skrypt robi dwie rzeczy: czyta Twoje kalendarze i trzyma stan gry w pliku na Twoim Google Drive, żeby telefon i komputer miały to samo. ${syncOn()?`Synchronizacja: <b>${syncState||'włączona'}</b>`:'Synchronizacja: wyłączona (brak URL lub tokenu)'}</p>
  <div class="row"><input type="url" data-set="calUrl" value="${esc(st.calUrl)}" placeholder="https://script.google.com/macros/s/…/exec" style="flex:1"></div>
  <div class="row" style="margin-top:6px"><span>Token</span>${inp('calToken')}</div>
  <div class="row" style="margin-top:8px"><button class="btn s" data-act="sync">Synchronizuj</button><span class="mut">${S.calSynced?'ostatnio: '+new Date(S.calSynced).toLocaleString('de-CH'):'nie połączono'}${S.calError?' · ⚠️ '+esc(S.calError):''}</span></div>
  <label class="row" style="margin-top:8px"><input type="checkbox" data-set="gaFromCal" ${st.gaFromCal?'checked':''}> Plan GA z kalendarza (zamiast domyślnych godzin)</label>
  <details><summary>Jak podłączyć (5 min, jednorazowo)</summary><ol class="mut">
  <li>Wejdź na <b>script.google.com</b> → Nowy projekt.</li><li>Wklej kod poniżej, zmień TOKEN na coś swojego.</li>
- <li>Wdróż → Nowe wdrożenie → typ <b>Aplikacja internetowa</b>; Wykonuj jako: <b>Ja</b>; Dostęp: <b>Każdy</b>. Zezwól na dostęp do kalendarza.</li>
- <li>Skopiuj URL kończący się na <b>/exec</b> tutaj, wpisz ten sam token, kliknij Synchronizuj.</li></ol>
+ <li>Wdróż → Nowe wdrożenie → typ <b>Aplikacja internetowa</b>; Wykonuj jako: <b>Ja</b>; Dostęp: <b>Każdy</b>. Zezwól na dostęp do kalendarza i Dysku (Google ostrzeże „niezweryfikowana aplikacja” → Zaawansowane → Przejdź — to Twój własny skrypt).</li>
+ <li>Skopiuj URL kończący się na <b>/exec</b> tutaj, wpisz ten sam token, kliknij Synchronizuj.</li><li>Na drugim urządzeniu: otwórz apkę → „Masz już Crescendo na innym urządzeniu?” → ten sam URL i token.</li></ol><p class="mut">Zmieniasz kod skryptu później? Wdróż → Zarządzaj wdrożeniami → ✏️ → Wersja: nowa. URL zostaje ten sam.</p>
  <pre id="scode">${esc(SCRIPT)}</pre><button class="btn s g" data-act="copy">Kopiuj kod</button></details>
  <details><summary>Rozpoznawanie wydarzeń (regex)</summary>
  <p class="mut">Kalendarz treningów → siłowy jeśli tytuł pasuje do „siłowy”, w innym razie rower (chyba że pasuje do „ignoruj”).</p>
@@ -553,6 +572,11 @@ document.addEventListener('click',ev=>{
   case'copy':navigator.clipboard.writeText(SCRIPT).then(()=>toast('Skopiowane'));break;
   case'export':{const bl=new Blob([JSON.stringify(S,null,1)],{type:'application/json'}),u=URL.createObjectURL(bl),l=document.createElement('a');l.href=u;l.download=`crescendo-${todayS()}.json`;l.click();URL.revokeObjectURL(u);break}
   case'reset':if(confirm('Na pewno skasować wszystko?')&&confirm('Serio? Bez backupu nie da się cofnąć.')){localStorage.removeItem(KEY);location.reload()}break;
+  case'setupsync':{const u=$('#su').value.trim(),tk=$('#st').value.trim();if(!u||!tk)return toast('URL i token');
+   fetch(u+(u.includes('?')?'&':'?')+new URLSearchParams({token:tk,action:'load'})).then(r=>r.json()).then(j=>{
+    if(j.error)throw new Error(j.error);if(!j.state)throw new Error('brak zapisanych danych');
+    S=j.state;S.settings={...DEFSET,...S.settings,calUrl:u,calToken:tk};S.syncBase=j.updatedAt;saveLocal();syncState='✓';rollMonths();sel=todayS();closeModal();render();toast('Dane pobrane ☁️');syncCal(true)
+   }).catch(e=>toast('Nie udało się: '+e.message));break}
   case'setup':{const B=parseFloat($('#sb').value)||150,sd=$('#sd').value||todayS();S=fresh(B,sd);openMonth(S.curMonth,[]);rollMonths();sel=todayS();closeModal();render();setTimeout(transferModal,300);break}
  }});
 document.addEventListener('change',ev=>{
@@ -565,9 +589,9 @@ document.addEventListener('change',ev=>{
 
 // ---------- boot ----------
 load();
-if(!S){modal(`<div class="dynbig" style="font-size:64px">Crescendo</div><p>Taski → XP → dynamika → budżet na przyjemności.</p><div class="kv"><span>Budżet na rozrywkę / mies.</span><span><input id="sb" type="number" value="150" style="width:80px"> CHF</span></div><div class="kv"><span>Start gry</span><input id="sd" type="date" value="${todayS()}"></div><button class="btn" style="width:100%;margin-top:14px" data-act="setup">Start ▶</button>`,true)}
-else{rollMonths();render();nextModal();if(S.settings.calUrl)syncCal(true)}
-document.addEventListener('visibilitychange',()=>{if(!document.hidden&&S){const t=todayS();if(sel>t)sel=t;rollMonths();render()}});
+if(!S){modal(`<div class="dynbig" style="font-size:64px">Crescendo</div><p>Taski → XP → dynamika → budżet na przyjemności.</p><div class="kv"><span>Budżet na rozrywkę / mies.</span><span><input id="sb" type="number" value="150" style="width:80px"> CHF</span></div><div class="kv"><span>Start gry</span><input id="sd" type="date" value="${todayS()}"></div><button class="btn" style="width:100%;margin-top:14px" data-act="setup">Start ▶</button><details style="margin-top:14px"><summary>Masz już Crescendo na innym urządzeniu?</summary><p class="mut">Wklej URL skryptu i token z tamtego urządzenia (Ustawienia → Google).</p><input type="url" id="su" placeholder="https://script.google.com/macros/s/…/exec" style="width:100%;margin:4px 0"><input type="text" id="st" placeholder="token" style="width:100%;margin:4px 0"><button class="btn v" style="width:100%" data-act="setupsync">Pobierz moje dane ☁️</button></details>`,true)}
+else{rollMonths();render();(async()=>{await pull();nextModal();if(S.settings.calUrl)syncCal(true)})()}
+document.addEventListener('visibilitychange',async()=>{if(!document.hidden&&S){const t=todayS();if(sel>t)sel=t;rollMonths();render();await pull()}});
 </script>
 </body>
 </html>
